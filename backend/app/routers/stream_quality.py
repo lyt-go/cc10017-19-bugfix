@@ -90,3 +90,38 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/{entry_id}/correction", response_model=dict)
+def get_correction(entry_id: int) -> dict:
+    """读取该规则最近一次巡检校正数据结果；停用规则与已阻断死信都会保留。"""
+    from app.pipeline_engine import pipeline_engine
+
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"质量规则 {entry_id} 不存在或已归档")
+    correction = pipeline_engine.get_quality_correction(entry_id, window=entry.get("检测窗口"))
+    return {"item": correction, "exists": correction is not None, "rule": entry}
+
+
+@router.post("/{entry_id}/inspect", response_model=ActionResult)
+def inspect_rule(entry_id: int) -> ActionResult:
+    """按单条规则执行巡检；停用规则只续做未完成批次，不再新增死信。"""
+    from app.pipeline_engine import pipeline_engine
+
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        return ActionResult(ok=False, message=f"质量规则 {entry_id} 不存在或已归档")
+    result = pipeline_engine.run_quality_inspection(
+        entry.get("监控主题"),
+        window=entry.get("检测窗口"),
+        rule_id=entry_id,
+    )
+    if not result.get("ok"):
+        return ActionResult(ok=False, message=result.get("error", "未知错误"))
+    correction = result.get("correction") or {}
+    return ActionResult(
+        ok=True,
+        message=f"巡检完成，校正结果 {correction.get('校正批次', '—')}（{correction.get('status', '—')}）",
+        entry=result,
+    )

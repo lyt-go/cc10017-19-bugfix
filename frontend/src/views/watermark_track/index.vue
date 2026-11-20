@@ -11,6 +11,36 @@
       </div>
     </header>
 
+    <div v-if="correction" class="correction-panel" data-testid="correction-panel">
+      <div class="correction-head">
+        <strong>巡检校正数据结果 {{ correction['校正批次'] }}</strong>
+        <span class="correction-status">{{ blockingSuppressed ? '已阻断抑制' : '阻断生效' }}</span>
+      </div>
+      <dl class="correction-grid">
+        <div>
+          <dt>对应主题</dt>
+          <dd data-testid="correction-topic">{{ correction.topic ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>检测窗口</dt>
+          <dd data-testid="correction-window">{{ correction.window ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>停用生效点</dt>
+          <dd data-testid="correction-disable-point">{{ correction['停用生效点'] ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>保留已阻断死信</dt>
+          <dd data-testid="correction-preserved">{{ (correction.preserved_dead_letters ?? []).join('、') || '—' }}</dd>
+        </div>
+      </dl>
+      <p class="correction-note" data-testid="correction-note">
+        {{ blockingSuppressed
+          ? '该主题质量规则已停用：水位追踪不再触发新阻断，已生成死信保留。'
+          : '质量规则仍生效：水位越界会按阈值触发阻断。' }}
+      </p>
+    </div>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -47,6 +77,14 @@
               @click="runAction(action, row)"
             >
               {{ action }}
+            </button>
+            <button
+              class="link"
+              type="button"
+              :data-testid="`check-window-${row.id}`"
+              @click="checkWindow(row)"
+            >
+              核对窗口
             </button>
           </td>
         </tr>
@@ -86,6 +124,15 @@ import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
 
+type Correction = {
+  id?: number
+  校正批次?: string
+  topic?: string
+  window?: string
+  停用生效点?: string | null
+  preserved_dead_letters?: string[]
+}
+
 const ENDPOINT = '/api/watermark_track'
 const columns = ["标记编号", "数据主题", "分区编号", "事件时间水位", "处理时间水位", "延迟记录数", "消费偏移", "检查时间"]
 const actions = ["标记正常", "标记滞后", "停用追踪"]
@@ -100,11 +147,34 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const correction = ref<Correction | null>(null)
+const blockingSuppressed = ref(false)
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
   { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
 ])
+
+async function loadCorrection(row: Row) {
+  correction.value = null
+  blockingSuppressed.value = false
+  if (row.id == null) return
+  try {
+    // 页面刷新后重新读取同一份巡检校正数据结果，保证与质量工作台一致。
+    const response = await request(`${ENDPOINT}/${row.id}/correction`)
+    if (!response.ok) return
+    const payload = await response.json()
+    correction.value = payload.item ?? null
+    blockingSuppressed.value = Boolean(payload.blocking_suppressed)
+  } catch {
+    correction.value = null
+    blockingSuppressed.value = false
+  }
+}
+
+async function checkWindow(row: Row) {
+  await loadCorrection(row)
+}
 
 function resetFilters() {
   filters.value = {}
@@ -163,6 +233,7 @@ async function runAction(action: string, row: Row) {
       throw new Error('水位追踪动作未生效，请稍后重试')
     }
     await reload()
+    await loadCorrection(row)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '水位追踪操作失败'
   }

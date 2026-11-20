@@ -90,3 +90,30 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/{entry_id}/correction", response_model=dict)
+def get_correction(entry_id: int) -> dict:
+    """读取该水位标记对应主题的巡检校正数据结果，用于核对检测窗口与阻断边界。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"水位标记 {entry_id} 不存在或已归档")
+    topic_code = entry.get("数据主题")
+    correction = service.get_quality_correction(topic_code)
+    return {
+        "item": correction,
+        "exists": correction is not None,
+        "topic": topic_code,
+        "blocking_suppressed": service.blocking_suppressed(topic_code),
+    }
+
+
+@router.get("/{entry_id}/corrections", response_model=dict)
+def list_corrections(entry_id: int) -> dict:
+    """列出该水位标记对应主题的全部巡检校正结果，刷新页面后仍与质量侧一致。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"水位标记 {entry_id} 不存在或已归档")
+    topic_code = entry.get("数据主题")
+    items = service.list_quality_corrections(topic_code)
+    return {"items": items, "total": len(items), "topic": topic_code}

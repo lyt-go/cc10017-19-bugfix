@@ -11,6 +11,42 @@
       </div>
     </header>
 
+    <div v-if="correction" class="correction-panel" data-testid="correction-panel">
+      <div class="correction-head">
+        <strong>巡检校正数据结果 {{ correction['校正批次'] }}</strong>
+        <span class="correction-status" :data-testid="'correction-status'">{{ correction.status }}</span>
+      </div>
+      <dl class="correction-grid">
+        <div>
+          <dt>规则状态</dt>
+          <dd data-testid="correction-rule-status">{{ correction.rule_status ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>检测窗口</dt>
+          <dd data-testid="correction-window">{{ correction.window ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>停用生效点</dt>
+          <dd data-testid="correction-disable-point">{{ correction['停用生效点'] ?? '—' }}</dd>
+        </div>
+        <div>
+          <dt>保留已阻断死信</dt>
+          <dd data-testid="correction-preserved">{{ (correction.preserved_dead_letters ?? []).join('、') || '—' }}</dd>
+        </div>
+        <div>
+          <dt>本窗口新增死信</dt>
+          <dd data-testid="correction-new-dead-letters">{{ (correction.new_dead_letters ?? []).join('、') || '无' }}</dd>
+        </div>
+        <div>
+          <dt>待续做批次</dt>
+          <dd data-testid="correction-remaining">{{ (correction['续做批次'] ?? []).join('、') || '无' }}</dd>
+        </div>
+      </dl>
+      <p v-if="correction.blocking_suppressed" class="correction-note" data-testid="correction-suppressed">
+        规则已停用：不再产生新的阻断死信，已生成记录保留并建立校正关系。
+      </p>
+    </div>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -47,6 +83,14 @@
               @click="runAction(action, row)"
             >
               {{ action }}
+            </button>
+            <button
+              class="link"
+              type="button"
+              :data-testid="`inspect-${row.id}`"
+              @click="inspect(row)"
+            >
+              执行巡检
             </button>
           </td>
         </tr>
@@ -86,6 +130,19 @@ import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
 
+type Correction = {
+  id?: number
+  校正批次?: string
+  status?: string
+  rule_status?: string
+  window?: string
+  停用生效点?: string | null
+  blocking_suppressed?: boolean
+  preserved_dead_letters?: string[]
+  new_dead_letters?: string[]
+  续做批次?: string[]
+}
+
 const ENDPOINT = '/api/stream_quality'
 const columns = ["规则编号", "监控主题", "校验类型", "告警阈值", "采样比例", "检测窗口", "阻断动作", "规则版本"]
 const actions = ["提交校验", "标记生效", "停用规则"]
@@ -100,11 +157,38 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const correction = ref<Correction | null>(null)
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
   { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
 ])
+
+async function loadCorrection(row: Row) {
+  correction.value = null
+  if (row.id == null) return
+  try {
+    const response = await request(`${ENDPOINT}/${row.id}/correction`)
+    if (!response.ok) return
+    const payload = await response.json()
+    correction.value = payload.item ?? null
+  } catch {
+    correction.value = null
+  }
+}
+
+async function inspect(row: Row) {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/${row.id}/inspect`, { method: 'POST' })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) throw new Error(payload.message || '巡检失败')
+    await reload()
+    await loadCorrection(row)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '巡检失败'
+  }
+}
 
 function resetFilters() {
   filters.value = {}
@@ -163,6 +247,7 @@ async function runAction(action: string, row: Row) {
       throw new Error('流式质量动作未生效，请稍后重试')
     }
     await reload()
+    await loadCorrection(row)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '流式质量操作失败'
   }

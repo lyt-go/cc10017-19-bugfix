@@ -55,17 +55,41 @@ def apply_partition(table_name: str) -> ActionResult:
 
 @router.get("/quality/{topic_code}")
 def get_quality_chain(topic_code: str) -> dict:
-    """查询质量容错链：水位→质量→死信。"""
+    """查询质量容错链：水位→质量→死信，附带巡检校正数据结果。"""
     return pipeline_engine.quality_chain_check(topic_code)
 
 
 @router.post("/quality/{topic_code}/inspect")
-def run_quality_inspection(topic_code: str) -> ActionResult:
-    """执行质量巡检。"""
-    result = pipeline_engine.run_quality_inspection(topic_code)
+def run_quality_inspection(
+    topic_code: str,
+    window: str | None = None,
+    rule_id: int | None = None,
+) -> ActionResult:
+    """执行质量巡检；停用规则不再生成新死信，只续做未完成的校正批次。"""
+    result = pipeline_engine.run_quality_inspection(topic_code, window=window, rule_id=rule_id)
     if not result.get("ok"):
         return ActionResult(ok=False, message=result.get("error", "未知错误"))
-    return ActionResult(ok=True, message="质量巡检完成", entry=result)
+    correction = result.get("correction") or {}
+    status = correction.get("status")
+    return ActionResult(
+        ok=True,
+        message=f"质量巡检完成，校正结果 {correction.get('校正批次', '—')}（{status or '—'}）",
+        entry=result,
+    )
+
+
+@router.get("/quality/{topic_code}/corrections")
+def list_quality_corrections(topic_code: str) -> dict:
+    """读取该主题的巡检校正数据结果；水位追踪与流式质量共用这份交接对象。"""
+    items = pipeline_engine.list_quality_corrections(topic_code=topic_code)
+    return {"items": items, "total": len(items), "topic": topic_code}
+
+
+@router.get("/quality-rules/{rule_id}/correction")
+def get_quality_correction(rule_id: int, window: str | None = None) -> dict:
+    """按规则读取最近一次巡检校正结果，便于页面刷新后核对窗口。"""
+    correction = pipeline_engine.get_quality_correction(rule_id, window=window)
+    return {"item": correction, "exists": correction is not None}
 
 
 @router.get("/consumption/{upstream_topic}")

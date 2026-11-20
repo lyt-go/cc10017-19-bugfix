@@ -62,4 +62,42 @@ class WatermarkTrackService:
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
+
+        if action == "标记滞后":
+            # 读取巡检校正数据结果：停用主题不再触发新阻断。
+            correction = self.get_quality_correction(entry.get("数据主题"))
+            if correction and correction.get("blocking_suppressed"):
+                entry["abnormal"] = False
+                entry["阻断状态"] = "已抑制"
+                entry["校正批次"] = correction.get("校正批次")
+                entry["停用生效点"] = correction.get("停用生效点")
+            else:
+                entry["abnormal"] = True
+                entry["阻断状态"] = "已触发"
+                entry["校正批次"] = (correction or {}).get("校正批次")
+
         return entry, f"水位标记已{action}"
+
+    def get_quality_correction(self, topic_code: str | None) -> dict[str, Any] | None:
+        """读取该主题最新的巡检校正数据结果（跨模块交接对象）。"""
+        if not topic_code:
+            return None
+        corrections = [
+            row for row in store.rows("quality_inspection_corrections")
+            if row.get("topic") == topic_code
+        ]
+        if not corrections:
+            return None
+        return corrections[-1]
+
+    def list_quality_corrections(self, topic_code: str | None = None) -> list[dict[str, Any]]:
+        """列出巡检校正数据结果，供水位追踪页核对检测窗口。"""
+        rows = [dict(row) for row in store.rows("quality_inspection_corrections")]
+        if topic_code:
+            rows = [row for row in rows if row.get("topic") == topic_code]
+        return rows
+
+    def blocking_suppressed(self, topic_code: str | None) -> bool:
+        """停用主题在质量侧已阻断抑制时，水位追踪不再触发新阻断。"""
+        correction = self.get_quality_correction(topic_code)
+        return bool(correction and correction.get("blocking_suppressed"))
